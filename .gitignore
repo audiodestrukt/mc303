@@ -1,0 +1,16 @@
+# Copyrighted Roland material stays local
+roms/
+docs/*.pdf
+# build products
+tools/f2mc16dasm/f2mc16dasm
+*.o
+# derived audio and reference material that is not ours to redistribute
+sim/*.wav
+reference/*.txt
+docs/block_diagram.png
+docs/schematic_*.png
+*.sram
+# disassembly listings of Roland's firmware: regenerate with tools/f2mc16dasm
+disasm/
+sim/mc303sim
+reference/*.pdf
