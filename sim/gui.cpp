@@ -4,6 +4,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <string>
+#include <cstring>
 
 static const int MACHINE_HZ = 12000000;
 extern const int PCM_RATE;
@@ -81,7 +82,7 @@ int run_gui(MC303Board &board, f2mc16_device &cpu, const char *shot_path, double
 
 	SDL_AudioSpec want{}, have{}; want.freq = PCM_RATE; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 1024; want.callback = audio_cb; want.userdata = &board;
 	SDL_AudioDeviceID adev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
-	if (adev) SDL_PauseAudioDevice(adev, 0); else fprintf(stderr, "no audio device: %s\n", SDL_GetError());
+	if (adev) { SDL_PauseAudioDevice(adev, 0); fprintf(stderr, "audio: %d Hz, %d ch, buffer %d\n", have.freq, have.channels, have.samples); } else fprintf(stderr, "no audio device: %s\n", SDL_GetError());
 	const int GX = 30, GY = 190, CW = 58, CH = 34;      // LED grid
 	const int SX = 30, SY = 470, SW = 58, SH = 17;      // switch grid
 	int held_col = -1, held_bit = -1;
@@ -92,6 +93,21 @@ int run_gui(MC303Board &board, f2mc16_device &cpu, const char *shot_path, double
 		while (SDL_PollEvent(&e)) {
 			if (e.type == SDL_QUIT) running = false;
 			else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) running = false;
+			else if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && !e.key.repeat) {
+				// computer keyboard as a MIDI keyboard: Z..M = C3.., Q..P = C4.., 1-8 = drums on channel 10
+				static const char *low = "zsxdcvgbhnjm,l.;/", *high = "q2w3er5t6y7ui9o0p";
+				int note = -1, chan = 0;
+				SDL_Keycode k = e.key.keysym.sym;
+				if (k >= '1' && k <= '8') { note = 36 + (k - '1'); chan = 9; }
+				else if (k < 128) {
+					const char *pl = strchr(low, (char)k), *ph = strchr(high, (char)k);
+					if (pl) note = 48 + (pl - low); else if (ph) note = 60 + (ph - high);
+				}
+				if (note >= 0) {
+					board.midi_in.push_back((e.type == SDL_KEYDOWN ? 0x90 : 0x80) | chan);
+					board.midi_in.push_back(note); board.midi_in.push_back(e.type == SDL_KEYDOWN ? 100 : 0);
+				}
+			}
 			else if (e.type == SDL_MOUSEBUTTONDOWN) {
 				int x = e.button.x, y = e.button.y;
 				if (x >= SX && x < SX + 16*SW && y >= SY && y < SY + 8*SH) {
@@ -122,6 +138,10 @@ int run_gui(MC303Board &board, f2mc16_device &cpu, const char *shot_path, double
 		for (int i = 0; i < 3; i++) draw_digit(ren, dx + i * (ds + 16), dy, ds, board.leds[7 - i]);
 		for (int i = 0; i < 3; i++) draw_digit(ren, dx + 260 + i * (ds + 16), dy, ds, board.leds[13 + i]);
 		text(ren, font, dx, dy + 2*ds + 6, "PATTERN / value        " + board.display_text());
+		text(ren, font, 560, 50, board.waverom_loaded ? "wave ROM: loaded" : "wave ROM: none (silent)");
+		text(ren, font, 560, 66, "PCM samples: " + std::to_string(board.audio_samples) + "   audio: " + (adev ? "on" : "OFF") + "   MIDI out bytes: " + std::to_string(board.midi_out.size()));
+		text(ren, font, 560, 82, "keys: Z-M / Q-P play notes (MIDI ch 1), 1-8 drums (ch 10)");
+		text(ren, font, 560, 98, "Esc quits and saves SRAM");
 		// LED grid
 		text(ren, font, GX, GY - 18, "LED matrix (columns 0-15 as scanned; 5-7 and 13-15 are the digits)");
 		for (int c = 0; c < 16; c++) for (int b = 0; b < 8; b++) {

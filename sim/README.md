@@ -34,7 +34,7 @@ Options:
 | `--waverom FILE [--unscramble]` | 4 MB wave ROM image for the PCM chip (default `../roms/waverom.bin`); larger files are truncated, `--unscramble` applies Nuked's pin-order permutation |
 | `--midi T "90 3C 7F"` | inject MIDI bytes into the UART at time T |
 | `--wav FILE` | record the PCM chip output (stereo 16-bit, 33103 Hz) |
-| `--gui` | SDL front panel with audio; `--shot FILE T` saves a screenshot at time T |
+| `--gui` | SDL front panel with audio. Computer keyboard plays notes: `Z`-`/` = C3 upwards, `Q`-`P` = C4 upwards (MIDI channel 1), `1`-`8` = drums (channel 10). Esc quits and saves SRAM. `--shot FILE T` saves a screenshot at time T |
 
 ## Audio
 
