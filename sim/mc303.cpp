@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <unistd.h>
 #include <mutex>
 #include <cmath>
 #include <algorithm>
@@ -373,11 +374,16 @@ static void print_leds(const MC303Board &b)
 
 int main(int argc, char **argv)
 {
-	const char *os_path = "../roms/1.03 [27C4096][37OD][Program OS][IC 7].BIN";
-	const char *data_path = "../roms/1.0 [27C4096][C673][DATA OS][IC 8].BIN";
+	// default ROM locations are relative to the executable, so the sim can be started from anywhere
+	std::string exe_dir = ".";
+	{ char buf[4096]; ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1); if (n > 0) { buf[n] = 0; exe_dir = buf; exe_dir = exe_dir.substr(0, exe_dir.rfind('/')); } }
+	std::string roms_dir = exe_dir + "/../roms/";
+	std::string os_default = roms_dir + "1.03 [27C4096][37OD][Program OS][IC 7].BIN", data_default = roms_dir + "1.0 [27C4096][C673][DATA OS][IC 8].BIN";
+	const char *os_path = os_default.c_str();
+	const char *data_path = data_default.c_str();
 	double seconds = 2.0;
 	bool trace = false, trace_io = false, trace_ga = false, trace_irq = false, check_len = false; int trace_task = -1; bool gui = false, dump_pcm = false;
-	struct MidiEv { double t; std::vector<u8> bytes; bool done = false; }; std::vector<MidiEv> midi_evs; const char *wave_path = "../roms/waverom.bin"; bool wave_unscramble = false; const char *wav_path = nullptr; const char *shot_path = nullptr; double shot_at = 2.5; u32 dump_addr = 0; int dump_n = 0;
+	struct MidiEv { double t; std::vector<u8> bytes; bool done = false; }; std::vector<MidiEv> midi_evs; const char *wave_path = nullptr; bool wave_unscramble = false; const char *wav_path = nullptr; const char *shot_path = nullptr; double shot_at = 2.5; u32 dump_addr = 0; int dump_n = 0;
 	int knob_over[8]; for (int i = 0; i < 8; i++) knob_over[i] = -1;
 	std::vector<u32> bps; u32 watch = 0; const char *sram_path = nullptr;
 	struct Press { int col, bit; double t_on = 0, t_off = 1e9; }; std::vector<Press> presses; u64 trace_from = 0;
@@ -417,11 +423,21 @@ int main(int argc, char **argv)
 
 	f2mc16_device cpu(machine_config{}, "cpu", nullptr, MACHINE_HZ);
 	MC303Board board(cpu);
-	if (!board.load_roms(os_path, data_path)) { fprintf(stderr, "cannot load ROMs\n"); return 1; }
+	if (!board.load_roms(os_path, data_path)) { fprintf(stderr, "cannot load the OS/data ROMs (%s, %s)\n", os_path, data_path); return 1; }
 	for (int i = 0; i < 8; i++) if (knob_over[i] >= 0) board.knobs[i] = knob_over[i];
 	board.watch_addr = watch;
 	board.trace_io = trace_io; board.trace_ga = trace_ga; board.trace_irq = trace_irq;
-	if (board.load_waverom(wave_path, wave_unscramble)) printf("wave ROM loaded from %s%s\n", wave_path, wave_unscramble ? " (unscrambled)" : ""); else printf("no wave ROM (%s): silent\n", wave_path);
+	// wave ROM: explicit --waverom, else roms/waverom.bin (raw), else the SC-55mk2 stand-in (needs unscrambling),
+	// both looked up relative to the executable so the sim can be started from any directory
+	{
+		const std::string &roms = roms_dir;
+		bool ok = false;
+		if (wave_path) ok = board.load_waverom(wave_path, wave_unscramble);
+		else if (board.load_waverom((roms + "waverom.bin").c_str(), false)) { wave_path = "roms/waverom.bin"; ok = true; }
+		else if (board.load_waverom((roms + "standin_sc55mk2_4mb.bin").c_str(), true)) { wave_path = "roms/standin_sc55mk2_4mb.bin (SC-55mk2 stand-in, wrong sounds)"; wave_unscramble = true; ok = true; }
+		if (ok) printf("wave ROM: %s%s\n", wave_path, wave_unscramble ? " [unscrambled]" : "");
+		else printf("wave ROM: none found (looked for %swaverom.bin and the SC-55 stand-in): running silent\n", roms.c_str());
+	}
 	if (wav_path) board.wav = true;
 	cpu.start();
 	board.reset();
