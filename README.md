@@ -7,7 +7,7 @@ displays, timers, ADC, MIDI UART and battery-backed RAM are modelled from the se
 and from what the firmware itself does with the I/O registers. Same approach as the
 [MMT-8 simulator](https://github.com/audiodestrukt/mmt8).
 
-![The simulator's front panel after boot: CURRENT and NEXT show A01](docs/gui.png)
+![Pattern A01 playing in the simulator: PLAY LED on, BEAT lamp lit, step light on pad 9, part R selected](docs/hero.png)
 
 **Status (2026-10-14):** boots to the pattern-mode screen (lamp test, "MC-303" splash with spinner,
 then `A01 A01`), and the front panel is now the real one: every button, pad, knob and the VALUE dial
@@ -18,8 +18,6 @@ play the selected part, the VALUE dial changes patterns, FUNC+pad functions work
 runs, and MIDI goes in and out (clock, active sensing, the boot reset burst). Real sound needs a dump
 of the 4 MB wave ROM (IC3), which is not done yet; with any TC6116AF-family wave ROM as a stand-in,
 notes come out as pitched, enveloped samples (the wrong ones).
-
-![Pattern A01 playing: PLAY LED on, step 6 lit on the pads](docs/gui_playing.png)
 
 ```
 cd sim && make
