@@ -15,7 +15,8 @@
 static const int MACHINE_HZ = 12000000;   // 24 MHz crystal / 2 (assumed)
 static MC303Board *g_board = nullptr;
 extern const int PCM_RATE; const int PCM_RATE = 33103;   // 24 MHz / 725 cycles per frame        // PCM chip output rate (24 MHz clock / 800 cycles per frame); refine when pitch is checked
-int run_gui(MC303Board &board, f2mc16_device &cpu, const char *shot_path, double shot_at);
+#include <functional>
+int run_gui(MC303Board &board, f2mc16_device &cpu, const char *shot_path, double shot_at, const std::function<void(double)> &timed_events);
 int mcu_mk1 = 0;
 int mcu_jv880 = 1;                          // MC-303 wave ROM addressing follows the JV-880 path
 void MCU_PostSample(int *sample)
@@ -76,7 +77,7 @@ void MCU_Interrupt_SetRequest(int, int value) { if (g_board) g_board->ga_interru
 
 MC303Board::MC303Board(f2mc16_device &c) : cpu(c), sram(0x40000, 0), iram(0x2000, 0)
 {
-	knobs.fill(0x40);
+	knobs.fill(0x80); knobs[4] = 0xa0;      // 7 pots mid-travel; channel 4 is the backup-battery monitor (valid 0x80-0xC0, else "Err 1")
 	g_board = this;
 	cpu.set_space(this);
 	cpu.irq_ack = [this](int level, u32 pc) { return irq_ack(level, pc); };
@@ -161,8 +162,8 @@ u8 MC303Board::io_read(u8 a)
 		}
 		return io[0x0b];
 	}
-	case 0x05: return tap   ? 0xbf : 0xff;  // P56 read inverted by firmware: 0 = pressed
-	case 0x09: return pedal ? 0x7f : 0xff;  // P97
+	case 0x05: return (io[0x05] | 0x40) & (pedal ? 0xbf : 0xff);  // P56 = PEDAL (0 = pressed); P54/P55 drive the BEAT LED
+	case 0x09: return tap ? 0x7f : 0xff;                            // P97 = TAP
 	case 0x26: {                            // UART1 receive data
 		u8 d = midi_in.empty() ? 0 : midi_in.front();
 		if (!midi_in.empty()) midi_in.pop_front();
@@ -180,14 +181,15 @@ void MC303Board::io_write(u8 a, u8 d)
 	u8 old = io[a];
 	io[a] = d;
 	switch (a) {
+	case 0x27: uart_update(); break;
 	case 0x0c:                              // port C: bit0 = DIR, bits1-4 = scan column
 		if ((d & 1) && !(old & 1)) {        // rising DIR: latch LED column data from port B
 			int col = (d >> 1) & 0x0f;
 			leds[col] = io[0x0b];
 		}
 		break;
-	case 0x26:                              // UART1 transmit
-		midi_out.push_back(d);
+	case 0x26:                              // UART1 transmit: 31250 baud, 10 bits per byte = 3840 machine cycles
+		midi_out.push_back(d); uart_tx_busy = 3840; uart_update();
 		break;
 	case 0x40: case 0x41: case 0x44: case 0x45:
 	case 0x48: case 0x49: case 0x4c: case 0x4d:
@@ -267,11 +269,15 @@ void MC303Board::adc_update()
 	request_irq(27, (io[0x69] & 0x88) == 0x88);
 }
 
+// UART1 = MIDI. SSR (0x27): bit4 RDRF, bit3 TDRE, bit1 RIE, bit0 TIE. The firmware's MIDI-out queue is
+// drained by the transmit interrupt (vector 40 -> FF0009 -> FAAD91); it sets TIE when the queue has data
+// and clears it when empty, so TDRE must drop for one byte time after each write or the ISR floods.
 void MC303Board::uart_update()
 {
 	if (midi_in.empty()) io[0x27] &= ~0x10; else io[0x27] |= 0x10;   // RDRF
-	io[0x27] |= 0x08;                                                 // TDRE always
+	if (uart_tx_busy <= 0) io[0x27] |= 0x08; else io[0x27] &= ~0x08;  // TDRE
 	request_irq(39, (io[0x27] & 0x10) != 0);
+	request_irq(40, (io[0x27] & 0x08) && (io[0x27] & 0x01));   // vector 40 (shares ICR14 with RX), handler FF0009
 }
 
 void MC303Board::step(int cyc)
@@ -283,12 +289,13 @@ void MC303Board::step(int cyc)
 		adc_busy -= cyc;
 		if (adc_busy <= 0) {
 			int ch = io[0x08] & 7;
-			io[0x6a] = knobs[ch] << 1;          // 10-bit result, low byte
-			io[0x6b] = knobs[ch] >> 7;
+			io[0x6a] = knobs[ch];               // firmware reads an 8-bit result from 0x6A (test mode shows 0-127 = value/2)
+			io[0x6b] = 0;
 			io[0x69] = (io[0x69] & ~0x20) | 0x80;
 			adc_update();
 		}
 	}
+	if (uart_tx_busy > 0) { uart_tx_busy -= cyc; if (uart_tx_busy <= 0) uart_update(); }
 	uart_update();
 	// PCM chip clocked from the 24 MHz crystal (2x the CPU machine clock). pcm.cpp's JV-880 path scales
 	// its per-frame cost by 25/29, so pre-scale by 25/29 so that one frame costs the real 725 chip cycles.
@@ -296,6 +303,14 @@ void MC303Board::step(int cyc)
 	pcm_frac += (u64)cyc * 2 * 25;
 	pcm_cycles += pcm_frac / 29; pcm_frac %= 29;
 	PCM_Update(pcm_cycles);
+}
+
+// VALUE dial: the panel encoder is decoded by a 74HC175/74HC20 pair on the main board into EINC (PA1/DREQ1)
+// and EDEC (PA2/DREQ2) pulses; the firmware services them as vectors 21 and 23 (flags 0x31/0x32 bit 2).
+void MC303Board::encoder(int dir)
+{
+	if (dir > 0) { io[0x32] |= 0x04; request_irq(23, true); }
+	else if (dir < 0) { io[0x31] |= 0x04; request_irq(21, true); }
 }
 
 void MC303Board::ga_interrupt(int value)
@@ -382,10 +397,12 @@ int main(int argc, char **argv)
 	const char *os_path = os_default.c_str();
 	const char *data_path = data_default.c_str();
 	double seconds = 2.0;
-	bool trace = false, trace_io = false, trace_ga = false, trace_irq = false, check_len = false; int trace_task = -1; bool gui = false, dump_pcm = false;
+	bool trace = false, trace_io = false, trace_ga = false, trace_irq = false, check_len = false; int trace_task = -1; bool gui = false, dump_pcm = false, ledlog = false;
 	struct MidiEv { double t; std::vector<u8> bytes; bool done = false; }; std::vector<MidiEv> midi_evs; const char *wave_path = nullptr; bool wave_unscramble = false; const char *wav_path = nullptr; const char *shot_path = nullptr; double shot_at = 2.5; u32 dump_addr = 0; int dump_n = 0;
-	int knob_over[8]; for (int i = 0; i < 8; i++) knob_over[i] = -1;
-	std::vector<u32> bps; u32 watch = 0; const char *sram_path = nullptr;
+	struct KnobEv { int ch, val; double t; bool done = false; }; std::vector<KnobEv> knob_evs;
+	struct EncEv { int dir; double t; bool done = false; }; std::vector<EncEv> enc_evs;
+	struct PokeEv { u32 addr; u8 val; double t; bool done = false; }; std::vector<PokeEv> poke_evs;
+	std::vector<u32> bps; u32 watch = 0; std::string sram_default = roms_dir + "mc303.sram"; const char *sram_path = nullptr; bool factory = false, no_sram = false; u32 bpdump_addr = 0; int bpdump_n = 0;
 	struct Press { int col, bit; double t_on = 0, t_off = 1e9; }; std::vector<Press> presses; u64 trace_from = 0;
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
@@ -407,8 +424,12 @@ int main(int argc, char **argv)
 		else if (a == "--shot") { shot_path = argv[++i]; shot_at = atof(argv[++i]); gui = true; }
 		else if (a == "--dumpw") { dump_addr = strtoul(argv[++i], 0, 16); dump_n = atoi(argv[++i]); }
 		else if (a == "--task") trace_task = strtoul(argv[++i], 0, 16);
+		else if (a == "--ledlog") ledlog = true;
 		else if (a == "--check") check_len = true;
 		else if (a == "--sram") sram_path = argv[++i];
+		else if (a == "--nosram") no_sram = true;          // start with blank user memory and do not save it
+		else if (a == "--factory") factory = true;         // run the factory preset at boot (FUNC held at power-on, ENTER at "SUrE")
+		else if (a == "--tap" || a == "--pedal") { Press pr; pr.col = a == "--tap" ? -1 : -2; pr.bit = 0; pr.t_on = atof(argv[++i]); pr.t_off = atof(argv[++i]); presses.push_back(pr); }
 		else if (a == "--press") {   // --press col bit [t_on t_off]  (seconds; default held from boot)
 			Press pr; pr.col = atoi(argv[++i]); pr.bit = atoi(argv[++i]);
 			if (i + 2 < argc && argv[i+1][0] != '-') { pr.t_on = atof(argv[++i]); pr.t_off = atof(argv[++i]); }
@@ -416,15 +437,24 @@ int main(int argc, char **argv)
 		}
 		else if (a == "--wp") watch = strtoul(argv[++i], 0, 16);
 		else if (a == "--bp") bps.push_back(strtoul(argv[++i], 0, 16));
-		else if (a == "--knob") { int n = atoi(argv[++i]); knob_over[n & 7] = atoi(argv[++i]); }
+		else if (a == "--bpdump") { bpdump_addr = strtoul(argv[++i], 0, 16); bpdump_n = atoi(argv[++i]); }
+		else if (a == "--knob") {    // --knob ch value [t]  (ADC channel 0-7, 0-255; at time t or from boot)
+			KnobEv k; k.ch = atoi(argv[++i]) & 7; k.val = atoi(argv[++i]); k.t = 0;
+			if (i + 1 < argc && argv[i+1][0] != '-') k.t = atof(argv[++i]);
+			knob_evs.push_back(k);
+		}
+		else if (a == "--poke") { PokeEv pk; pk.addr = strtoul(argv[++i], 0, 16); pk.val = strtoul(argv[++i], 0, 16); pk.t = atof(argv[++i]); poke_evs.push_back(pk); }   // --poke ADDR VAL t
+		else if (a == "--enc") { EncEv ev; ev.dir = atoi(argv[++i]); ev.t = atof(argv[++i]); enc_evs.push_back(ev); }   // --enc +1|-1 t
 		else if (a == "--os") os_path = argv[++i];
 		else if (a == "--data") data_path = argv[++i];
 	}
 
+	if (!sram_path && !no_sram) sram_path = sram_default.c_str();
+	if (factory) { Press a; a.col = 11; a.bit = 3; a.t_on = 0; a.t_off = 1.8; presses.push_back(a); Press b; b.col = 2; b.bit = 5; b.t_on = 2.5; b.t_off = 2.8; presses.push_back(b); }
 	f2mc16_device cpu(machine_config{}, "cpu", nullptr, MACHINE_HZ);
 	MC303Board board(cpu);
 	if (!board.load_roms(os_path, data_path)) { fprintf(stderr, "cannot load the OS/data ROMs (%s, %s)\n", os_path, data_path); return 1; }
-	for (int i = 0; i < 8; i++) if (knob_over[i] >= 0) board.knobs[i] = knob_over[i];
+	for (auto &k : knob_evs) if (k.t <= 0) { board.knobs[k.ch] = k.val; k.done = true; }
 	board.watch_addr = watch;
 	board.trace_io = trace_io; board.trace_ga = trace_ga; board.trace_irq = trace_irq;
 	// wave ROM: explicit --waverom, else roms/waverom.bin (raw), else the SC-55mk2 stand-in (needs unscrambling),
@@ -441,7 +471,15 @@ int main(int argc, char **argv)
 	if (wav_path) board.wav = true;
 	cpu.start();
 	board.reset();
-	if (sram_path) { std::ifstream f(sram_path, std::ios::binary); if (f) { f.read((char *)board.sram.data(), board.sram.size()); printf("loaded SRAM from %s\n", sram_path); } }
+	if (sram_path) {
+		std::ifstream f(sram_path, std::ios::binary);
+		if (f) { f.read((char *)board.sram.data(), board.sram.size()); printf("user memory: %s\n", sram_path); }
+		else if (gui && !factory) {   // first run: blank user memory boots but pads are silent (velocity 0), so run the factory preset
+			printf("user memory: none, running the factory preset (saved to %s on exit)\n", sram_path);
+			Press a; a.col = 11; a.bit = 3; a.t_on = 0; a.t_off = 1.8; presses.push_back(a); Press b; b.col = 2; b.bit = 5; b.t_on = 2.5; b.t_off = 2.8; presses.push_back(b);
+			factory = true;
+		}
+	}
 
 
 	struct PubDasm : f2mc16_disassembler { using f2mc16_disassembler::disassemble; };
@@ -477,6 +515,7 @@ int main(int argc, char **argv)
 			u32 sp = (cpu.ps() & 0x20) ? ((cpu.ssb() << 16) | cpu.ssp()) : ((cpu.usb() << 16) | cpu.usp());
 			printf("[%llu] BP %06X task=%04X A=%08X PS=%04X SP=%06X stack:", (unsigned long long)board.cycles, pc, board.sram[2] | (board.sram[3] << 8), cpu.acc(), cpu.ps(), sp);
 			for (int i = 0; i < 8; i++) printf(" %04X", board.read_byte(sp + 2*i) | (board.read_byte(sp + 2*i + 1) << 8));
+			if (bpdump_n) { printf("  [%06X]:", bpdump_addr); for (int i = 0; i < bpdump_n; i++) printf(" %02X", board.read_byte(bpdump_addr + i)); }
 			printf("\n");
 		}
 		if (trace && board.cycles >= trace_from && (trace_task < 0 || (board.sram[2] | (board.sram[3] << 8)) == trace_task)) {
@@ -485,24 +524,35 @@ int main(int argc, char **argv)
 		}
 	};
 
-	if (gui) { int rc = run_gui(board, cpu, shot_path, shot_at); if (sram_path) { std::ofstream f(sram_path, std::ios::binary); f.write((const char *)board.sram.data(), board.sram.size()); } return rc; }
+	auto apply_events = [&](double now) {
+		for (auto &ev : midi_evs) if (!ev.done && now >= ev.t) { ev.done = true; for (u8 b : ev.bytes) board.midi_in.push_back(b); }
+		for (auto &k : knob_evs) if (!k.done && now >= k.t) { k.done = true; board.knobs[k.ch] = k.val; }
+		for (auto &ev : enc_evs) if (!ev.done && now >= ev.t) { ev.done = true; board.encoder(ev.dir); }
+		for (auto &pk : poke_evs) if (!pk.done && now >= pk.t) { pk.done = true; board.write_byte(pk.addr, pk.val); printf("[%7.3f s] poke %06X = %02X\n", now, pk.addr, pk.val); }
+		for (auto &pr : presses) {
+			bool on = now >= pr.t_on && now < pr.t_off;
+			if (pr.col == -1) board.tap = on; else if (pr.col == -2) board.pedal = on;
+			else if (on) board.switches[pr.col & 15] |= 1 << (pr.bit & 7); else board.switches[pr.col & 15] &= ~(1 << (pr.bit & 7));
+		}
+	};
+	if (gui) { int rc = run_gui(board, cpu, shot_path, shot_at, apply_events); if (sram_path) { std::ofstream f(sram_path, std::ios::binary); f.write((const char *)board.sram.data(), board.sram.size()); } return rc; }
 	u64 total = (u64)(seconds * MACHINE_HZ);
 	const int slice = 100;
 	try {
-		std::string last_disp; u64 next_check = 0;
+		std::string last_disp, last_leds; u64 next_check = 0;
 		while (board.cycles < total) {
 			int ran = cpu.run(slice);
 			board.step(ran > 0 ? ran : slice);
 			if (board.cycles >= next_check) {          // report display changes (every ~5 ms)
 				next_check = board.cycles + MACHINE_HZ / 200;
 				double now = (double)board.cycles / MACHINE_HZ;
-				for (auto &ev : midi_evs) if (!ev.done && now >= ev.t) { ev.done = true; for (u8 b : ev.bytes) board.midi_in.push_back(b); }
-				for (auto &pr : presses) {
-					bool on = now >= pr.t_on && now < pr.t_off;
-					if (on) board.switches[pr.col & 15] |= 1 << (pr.bit & 7); else board.switches[pr.col & 15] &= ~(1 << (pr.bit & 7));
-				}
+				apply_events(now);
 				std::string d = board.display_text();
 				if (d != last_disp) { printf("[%7.3f s] display %s\n", (double)board.cycles / MACHINE_HZ, d.c_str()); last_disp = d; }
+				if (ledlog) {
+					std::string l((const char *)&board.sram[0x5d1a], 16); l += (char)(board.io[0x05] & 0x30);
+					if (l != last_leds) { printf("[%7.3f s] leds", now); for (int c = 0; c < 16; c++) printf(" %02X", (u8)l[c]); printf("  beat:%s%s\n", board.beat_red() ? "R" : "-", board.beat_green() ? "G" : "-"); last_leds = l; }
+				}
 			}
 		}
 	} catch (std::exception &e) {

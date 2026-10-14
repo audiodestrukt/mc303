@@ -7,18 +7,24 @@ displays, timers, ADC, MIDI UART and battery-backed RAM are modelled from the se
 and from what the firmware itself does with the I/O registers. Same approach as the
 [MMT-8 simulator](https://github.com/audiodestrukt/mmt8).
 
-![The simulator after boot: both displays show A01, the pad LEDs are lit](docs/gui.png)
+![The simulator's front panel after boot: CURRENT and NEXT show A01](docs/gui.png)
 
-**Status (2026-09-24):** boots to the pattern-mode screen (lamp test, "MC-303" splash with spinner,
-then `A01 A01`), scans the panel, responds to keys, sends and receives MIDI, and plays notes through
-the PCM chip model at the chip's real 33.1 kHz. Real sound needs a dump of the 4 MB wave ROM (IC3),
-which is not done yet; with any TC6116AF-family wave ROM as a stand-in, notes come out as pitched,
-enveloped samples (the wrong ones).
+**Status (2026-10-14):** boots to the pattern-mode screen (lamp test, "MC-303" splash with spinner,
+then `A01 A01`), and the front panel is now the real one: every button, pad, knob and the VALUE dial
+is wired to the firmware through the switch matrix, the ADC and the encoder inputs, and all LEDs,
+the BEAT lamp and the two displays are read back from the scan the firmware performs. PLAY runs the
+preset patterns through the PCM chip model (step light on the pads, PLAY LED, beat lamp), the pads
+play the selected part, the VALUE dial changes patterns, FUNC+pad functions work, the factory preset
+runs, and MIDI goes in and out (clock, active sensing, the boot reset burst). Real sound needs a dump
+of the 4 MB wave ROM (IC3), which is not done yet; with any TC6116AF-family wave ROM as a stand-in,
+notes come out as pitched, enveloped samples (the wrong ones).
+
+![Pattern A01 playing: PLAY LED on, step 6 lit on the pads](docs/gui_playing.png)
 
 ```
 cd sim && make
-./mc303sim --gui --waverom ../roms/waverom.bin --sram ../roms/mc303.sram   # front panel with audio
-./mc303sim -t 3                                                             # headless boot, prints the displays
+./mc303sim --gui          # front panel with audio; ROMs and user memory are found next to the binary
+./mc303sim -t 3           # headless boot, prints the displays
 ```
 
 ROM images are not included. Put the OS and data EPROM dumps in `roms/` (see below) and the wave ROM
@@ -37,14 +43,16 @@ as `roms/waverom.bin` when you have it.
 | IC4 | HM65256 32 KB SRAM | Effect (reverb/delay) memory, on the PCM chip's private bus (EA0-14 / ED0-7) |
 | IC9 | uPD63200 | DAC, serial from the PCM chip |
 | IC11 | 74HC4051 | Analog mux: 8 panel knobs -> CPU AN0 (mux select AMUX0-2 on P80-P82) |
-| IC13/14 | 74HC175 + 74HC20 | Rotary encoder -> EINC / EDEC pulses on CPU DREQ pins |
+| IC13/14 | 74HC175 + 74HC20 | Rotary encoder -> EINC / EDEC pulses on PA1/DREQ1 and PA2/DREQ2 (vectors 21 / 23) |
 | IC12 | TC3W01F | A19 decoder: CPU CS0 -> XCSL (IC8) / XCSH (IC7) |
 
 Panel board: 4 scan lines SC0-SC3 (CPU PC0-PC3) drive two 74HC138 decoders, one selecting a
 switch column, one selecting an LED sink (TD62384). SD0-SD7 (CPU PB0-PB7) is a bidirectional
 8-bit bus through a 74HC245 (DIR: high = drive LED source driver TD62785, low = read switches).
 Display is two 3-digit LB-603VP LED displays plus ~60 discrete LEDs; there is no LCD.
-MIDI uses UART1 (SIN1/SOUT1); TAP, PEDAL, MUTE are GPIO.
+MIDI uses UART1 (SIN1/SOUT1, TX interrupt vector 40 drains the firmware's output ring); TAP is P97,
+PEDAL P56, the two-colour BEAT LED hangs off P54/P55, and the seven ADC knobs plus the backup
+battery go through the 74HC4051 (see `sim/README.md` for the complete switch, LED and knob maps).
 
 ### CPU memory map (from schematic + firmware)
 
@@ -117,7 +125,9 @@ Wave ROM (IC3) is not dumped yet. It is a 42-pin 2M x 16 mask ROM that reads as 
 framework, plus a dozen missing instructions and two bug fixes), Nuked-SC55's PCM chip model, and a
 board model written from the schematic and the firmware's own I/O usage. It reaches the normal
 pattern-mode screen (`A01`) after the lamp test and the "MC-303" splash, scans the panel, sends MIDI
-active sensing, and responds to keys. See `sim/README.md`.
+active sensing, and responds to keys. The GUI reproduces the front panel from the service-notes
+layout drawing; the switch, LED and knob matrices were mapped from the panel schematic and verified
+by pressing every matrix position and watching what the firmware did. See `sim/README.md`.
 
 ## Tools
 
@@ -136,7 +146,7 @@ cd tools/f2mc16dasm && make
 1. Sound engine: reuse Nuked-SC55's `pcm.cpp` (GPL-2+, decap-derived TC6116AF emulation).
 2. CPU: MAME's `cpu/f2mc16` core (BSD-3), plus an MB90705 peripheral variant (UART, timers, ADC, ports).
    Still-unimplemented opcodes in MAME's core: CMR, NCC, SUBDC, DIVU/MULU A, CALLV, ADD/SUB A dir.
-3. Board glue from the schematic, SDL front panel + ALSA MIDI as in the MMT-8 simulator.
+3. Board glue from the schematic, SDL front panel (done) + ALSA MIDI as in the MMT-8 simulator.
 
 ## Credits
 
@@ -161,6 +171,9 @@ This project stands on other people's reverse engineering, and the sound engine 
   `reference/MB90570A_datasheet.pdf` is the F2MC-16LX MB90570A, a different chip; see `reference/NOTES.md`
   for what does and does not carry over.
 - REALOS/907 *Kernel* manual (the User's Guide is in `reference/`) would settle whether the kernel is REALOS.
-- Follow jump tables (`JMP @A`) to raise disassembly coverage; identify the switch/LED matrix layout from `A0:5CFA`/`5D1A` consumers.
+- Follow jump tables (`JMP @A`) to raise disassembly coverage.
 - Dump the wave ROM (needed for any sound; the simulator boots without it).
-- SDL front panel, ALSA MIDI, complete switch/LED naming from the panel schematic.
+- ALSA MIDI ports for the GUI.
+- The knob-to-ADC-channel map is derived from the schematics and board drawing; confirming it with the
+  service ADC test needs the pedal test (test 3) to pass first, which it does not in the simulator yet.
+- SHIFT+pad (EDIT) functions show nothing on the display so far; FUNC+pad functions do.

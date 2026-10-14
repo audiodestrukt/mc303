@@ -29,6 +29,9 @@ public:
 	std::array<u8, 16> switches{};         // pressed bits per column (1 = pressed)
 	std::array<u8, 8> knobs;
 	bool tap = false, pedal = false;
+	void encoder(int dir);                 // +1 / -1 detent on the VALUE dial
+	bool beat_red() const { return !(io[0x05] & 0x10); }    // BEAT LED (two-colour): P54 = red, P55 = green, active low
+	bool beat_green() const { return !(io[0x05] & 0x20); }
 	std::string display_text() const;
 
 	// MIDI
@@ -76,6 +79,7 @@ private:
 
 	// UART1 at 0x24-0x27 (MIDI)
 	void uart_update();
+	s32 uart_tx_busy = 0;
 
 	u64 pending = 0;                       // bit per vector number
 };
