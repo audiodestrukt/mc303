@@ -42,6 +42,8 @@ Headless options:
 | `--sram FILE`, `--nosram` | user memory file (default `../roms/mc303.sram`), or blank memory that is not saved |
 | `--midi T "90 3C 7F"` | inject MIDI bytes into the UART at time T |
 | `--wav FILE` | record the PCM chip output (stereo 16-bit, 33103 Hz) |
+| `--midiout FILE` | write every byte sent on MIDI OUT to FILE at exit |
+| `--os FILE`, `--data FILE` | alternative OS / data ROM images (e.g. the wave-dump OS from `tools/wavedump/`) |
 | `--waverom FILE [--unscramble]` | wave ROM image; larger files are truncated to 4 MB, `--unscramble` applies Nuked's pin-order permutation |
 | `--ledlog` | print the LED scan buffer and the BEAT LED whenever they change |
 | `--trace CYCLE [--task BLOCK]` | instruction trace from a cycle count, optionally only while a given task (flag block address) is current |

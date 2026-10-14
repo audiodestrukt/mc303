@@ -398,7 +398,7 @@ int main(int argc, char **argv)
 	const char *data_path = data_default.c_str();
 	double seconds = 2.0;
 	bool trace = false, trace_io = false, trace_ga = false, trace_irq = false, check_len = false; int trace_task = -1; bool gui = false, dump_pcm = false, ledlog = false;
-	struct MidiEv { double t; std::vector<u8> bytes; bool done = false; }; std::vector<MidiEv> midi_evs; const char *wave_path = nullptr; bool wave_unscramble = false; const char *wav_path = nullptr; const char *shot_path = nullptr; double shot_at = 2.5; u32 dump_addr = 0; int dump_n = 0;
+	struct MidiEv { double t; std::vector<u8> bytes; bool done = false; }; std::vector<MidiEv> midi_evs; const char *wave_path = nullptr; bool wave_unscramble = false; const char *wav_path = nullptr; const char *midiout_path = nullptr; const char *shot_path = nullptr; double shot_at = 2.5; u32 dump_addr = 0; int dump_n = 0;
 	struct KnobEv { int ch, val; double t; bool done = false; }; std::vector<KnobEv> knob_evs;
 	struct EncEv { int dir; double t; bool done = false; }; std::vector<EncEv> enc_evs;
 	struct PokeEv { u32 addr; u8 val; double t; bool done = false; }; std::vector<PokeEv> poke_evs;
@@ -421,6 +421,7 @@ int main(int argc, char **argv)
 		else if (a == "--waverom") wave_path = argv[++i];
 		else if (a == "--unscramble") wave_unscramble = true;
 		else if (a == "--wav") wav_path = argv[++i];
+		else if (a == "--midiout") midiout_path = argv[++i];   // write every byte sent on MIDI OUT to this file at exit
 		else if (a == "--shot") { shot_path = argv[++i]; shot_at = atof(argv[++i]); gui = true; }
 		else if (a == "--dumpw") { dump_addr = strtoul(argv[++i], 0, 16); dump_n = atoi(argv[++i]); }
 		else if (a == "--task") trace_task = strtoul(argv[++i], 0, 16);
@@ -561,6 +562,7 @@ int main(int argc, char **argv)
 
 	if (sram_path) { std::ofstream f(sram_path, std::ios::binary); f.write((const char *)board.sram.data(), board.sram.size()); printf("saved SRAM to %s\n", sram_path); }
 	if (wav_path) board.write_wav(wav_path, PCM_RATE);
+	if (midiout_path) { std::ofstream f(midiout_path, std::ios::binary); for (u8 b : board.midi_out) f.put((char)b); printf("MIDI OUT written to %s (%zu bytes)\n", midiout_path, board.midi_out.size()); }
 	if (dump_pcm) {
 		printf("PCM voice RAM (slots with data): mask=%08X 3c=%02X 3d=%02X\n", pcm.voice_mask, pcm.config_reg_3c, pcm.config_reg_3d);
 		for (int v = 0; v < 32; v++) {

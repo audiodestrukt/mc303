@@ -72,7 +72,10 @@ and raises GPINT to the CPU, just as in the SC-55mk2 (Nuked-SC55's `MCU_GA_*`).
 | `1.03 [27C4096][37OD][Program OS][IC 7].BIN` | IC7 | OS v1.03, 512 KB, byte order as seen by the CPU (little-endian) |
 | `1.0 [27C4096][C673][DATA OS][IC 8].BIN` | IC8 | Preset data, 512 KB. Header `RolandMC-303N` + `00-100-09`, then a tagged directory: `PTBD`, `RPBD`, `PTIF`, `RPSU`, `nPTN`, `nRPS` |
 
-Wave ROM (IC3) is not dumped yet. It is a 42-pin 2M x 16 mask ROM that reads as a 27C322.
+Wave ROM (IC3) is not dumped yet. It is a soldered SOP-44 2M x 16 mask ROM on the PCM chip's private
+bus, so it cannot be read in circuit by a programmer. `tools/wavedump/` has the alternative: a patched
+OS EPROM that reads the ROM through the PCM chip's own read-back registers and streams it out of MIDI
+OUT (verified end to end in the simulator). See `tools/wavedump/README.md`.
 
 ## Firmware notes (OS 1.03)
 
@@ -170,7 +173,7 @@ This project stands on other people's reverse engineering, and the sound engine 
   for what does and does not carry over.
 - REALOS/907 *Kernel* manual (the User's Guide is in `reference/`) would settle whether the kernel is REALOS.
 - Follow jump tables (`JMP @A`) to raise disassembly coverage.
-- Dump the wave ROM (needed for any sound; the simulator boots without it).
+- Dump the wave ROM with `tools/wavedump/` (needed for real sound; the simulator boots and plays a stand-in without it).
 - ALSA MIDI ports for the GUI.
 - The knob-to-ADC-channel map is derived from the schematics and board drawing; confirming it with the
   service ADC test needs the pedal test (test 3) to pass first, which it does not in the simulator yet.
